@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  meal-planner-api
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs20.x
+    LoggingConfig:
+      LogFormat: JSON
+    Environment:
+      Variables:
+        MEALS_TABLE: !Ref MealsTable
+        MEAL_PLANS_TABLE: !Ref MealPlansTable
+        GROCERY_LISTS_TABLE: !Ref GroceryListsTable
+        KROGER_CLIENT_ID_PARAM: /meal-planner/dev/kroger/client_id
+        KROGER_CLIENT_SECRET_PARAM: /meal-planner/dev/kroger/client_secret
+
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: '*'
+
+Resources:
+  MealPlannerApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: v1
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              audience:
+                - !Ref UserPoolClient
+
+  GetMealsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: hello-world/
+      Handler: app.getMealsHandler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MealsTable
+      Events:
+        GetMeals:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MealPlannerApi
+            Path: /meals
+            Method: GET
+
+  CreateMealPlanFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: hello-world/
+      Handler: app.createMealPlanHandler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MealPlansTable
+      Events:
+        CreateMealPlan:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MealPlannerApi
+            Path: /meal-plans
+            Method: POST
+
+  GenerateGroceryListFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: hello-world/
+      Handler: app.generateGroceryListHandler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GroceryListsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref MealPlansTable
+      Events:
+        GenerateGroceryList:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MealPlannerApi
+            Path: /meal-plans/{mealPlanId}/grocery-list/generate
+            Method: POST
+
+  ExportToKrogerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: hello-world/
+      Handler: app.exportToKrogerHandler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref GroceryListsTable
+        - Statement:
+            - Sid: ReadKrogerSsmParams
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/meal-planner/dev/kroger/client_id"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/meal-planner/dev/kroger/client_secret"
+      Events:
+        ExportToKroger:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref MealPlannerApi
+            Path: /grocery-lists/{groceryListId}/export/kroger
+            Method: POST
+
+  MealsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  MealPlansTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  GroceryListsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: meal-planner-users
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: meal-planner-web-client
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+Outputs:
+  ApiBaseUrl:
+    Description: HTTP API base URL
+    Value: !Sub "https://${MealPlannerApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/v1"
+  MealsTableName:
+    Value: !Ref MealsTable
+  MealPlansTableName:
+    Value: !Ref MealPlansTable
+  GroceryListsTableName:
+    Value: !Ref GroceryListsTable
+  CognitoUserPoolId:
+    Value: !Ref UserPool
+  CognitoUserPoolClientId:
+    Value: !Ref UserPoolClient
